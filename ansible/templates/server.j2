@@ -1,0 +1,29 @@
+server {
+              listen 443 ssl;
+              root /var/www/phpmyadmin;
+              index index.php index.html index.htm index.nginx-debian.html;
+              server_name {{ ansible_host }} {{haproxy_server}} {{domain_name}};
+
+              ssl_certificate /etc/nginx/ssl/nginx-selfsigned.crt;
+              ssl_certificate_key /etc/nginx/ssl/nginx-selfsigned.key;
+
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+
+              location ~ \\.php$ {
+                  include snippets/fastcgi-php.conf;
+                  fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+              }
+
+              location ~ /\\.ht {
+                  deny all;
+              }
+          }
+
+server {
+    listen 80;
+    server_name {{ ansible_host }} {{haproxy_server}} {{domain_name}};
+    
+    return 301 https://$host$request_uri;
+}

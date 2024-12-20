@@ -1,0 +1,34 @@
+global
+    log /dev/log local0
+    log 127.0.0.1 local1 notice
+    chroot /var/lib/haproxy
+    maxconn 2000
+    user haproxy
+    group haproxy
+    daemon
+
+defaults
+    log     global
+    mode    http
+    option  httplog
+    option  dontlognull
+    timeout connect 5000
+    timeout client  50000
+    timeout server  50000
+    errorfile 400 /etc/haproxy/errors/400.http
+    errorfile 403 /etc/haproxy/errors/403.http
+    errorfile 408 /etc/haproxy/errors/408.http
+
+frontend frontend_servers
+    bind *:443 ssl crt /etc/haproxy/ssl/haproxy.crt
+    mode http
+    default_backend Back_Servers
+
+backend Back_Servers
+    mode http
+    balance roundrobin
+    option forwardfor
+    cookie SERVERID insert indirect nocache
+    {% for server in nginx_server %}
+server phpMyAdmin{{ loop.index }}.com {{ server }}:443 check ssl verify none cookie S{{ loop.index }}
+    {% endfor %}

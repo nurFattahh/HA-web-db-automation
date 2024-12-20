@@ -1,0 +1,12 @@
+[phpMyAdmin]
+phpMyAdmin1 ansible_host=54.147.48.157 ansible_ssh_user=ubuntu ansible_ssh_private_key_file=/home/ubuntu/CCS.pem private_ip=172.31.83.99 ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+phpMyAdmin2 ansible_host=34.201.118.161 ansible_ssh_user=ubuntu ansible_ssh_private_key_file=/home/ubuntu/CCS.pem private_ip=172.31.91.18 ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+[DNS]
+DNS ansible_host=44.202.120.153 ansible_ssh_user=ubuntu ansible_ssh_private_key_file=/home/ubuntu/CCS.pem private_ip=172.31.89.218 ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+[dbSlave]
+dbSlave1 ansible_host=100.24.43.243 ansible_ssh_user=ubuntu ansible_ssh_private_key_file=/home/ubuntu/CCS.pem private_ip=172.31.81.237 ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+dbSlave2 ansible_host=3.83.42.119 ansible_ssh_user=ubuntu ansible_ssh_private_key_file=/home/ubuntu/CCS.pem private_ip=172.31.90.208 ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+[haproxy]
+haproxy ansible_host=107.23.191.7 ansible_ssh_user=ubuntu ansible_ssh_private_key_file=/home/ubuntu/CCS.pem private_ip=172.31.88.126 ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+[dbMaster]
+dbMaster ansible_host=52.90.193.229 ansible_ssh_user=ubuntu ansible_ssh_private_key_file=/home/ubuntu/CCS.pem private_ip=172.31.93.123 ansible_ssh_common_args='-o StrictHostKeyChecking=no'

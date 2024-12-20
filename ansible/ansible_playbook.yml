@@ -1,0 +1,436 @@
+# DB MASTER
+- name: Configure DB Master
+  tags:
+    - configure_master
+  hosts: dbMaster
+  become: yes
+  vars:
+    mysql_slaves: "{{ groups['dbSlave'] | map('extract', hostvars, 'private_ip') | list }}"
+  
+  tasks:
+    - name: Update and install MySQL server
+      apt:
+        name: mysql-server
+        update_cache: yes
+        state: present
+
+    - name: Modify MySQL configuration for replication
+      lineinfile:
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+      with_items:
+        - { regexp: '^user.*', line: '#user = mysql' }
+        - { regexp: '^# log_bin.*', line: 'log_bin = /var/log/mysql/mysql-bin.log' }
+        - { regexp: '^bind-address.*', line: 'bind-address = 0.0.0.0' }
+        - { regexp: '^# server-id.*', line: 'server-id = 1' }
+
+    - name: Create user 'fattah' with permissions
+      shell: |
+        sudo mysql -e "CREATE USER 'fattah'@'%' IDENTIFIED BY 'password_fattah';"
+        sudo mysql -e "GRANT ALL ON *.* TO 'fattah'@'%';"
+        sudo mysql -e "FLUSH PRIVILEGES;"
+
+
+    - name: Create replication user
+      shell: |
+        sudo mysql -e "CREATE USER 'replica'@'%' IDENTIFIED BY 'password_replica';"
+        sudo mysql -e "GRANT REPLICATION SLAVE ON *.* TO 'replica'@'%';"
+        sudo mysql -e "FLUSH PRIVILEGES;"
+
+    - name: Alter replication user to use mysql_native_password
+      shell: |
+        mysql -e "ALTER USER 'replica'@'%' IDENTIFIED WITH mysql_native_password BY 'password_replica';"
+        mysql -e "FLUSH PRIVILEGES;"
+
+    - name: Restart MySQL service
+      service:
+        name: mysql
+        state: restarted
+
+    - name: Create a dump of all databases
+      args:
+        creates: /tmp/masterdump.sql 
+      register: grep_result
+      shell: |
+        sudo mysqldump -uroot --all-databases --source-data > /tmp/masterdump.sql
+        sudo mv /tmp/masterdump.sql /home/ubuntu/masterdump.sql
+        grep CHANGE /home/ubuntu/masterdump.sql | head -1
+      
+
+    - name: Display the first CHANGE statement
+      debug:
+        msg: "First CHANGE statement: {{ grep_result.stdout }}"
+
+    - name: Check slaves ip
+      debug:
+        msg: "mysql_slaves: {{ mysql_slaves }}"
+
+    - name: Copy dump to dbSlave
+      shell: sudo scp -i /home/ubuntu/CCS.pem -o StrictHostKeyChecking=no /home/ubuntu/masterdump.sql ubuntu@{{ item }}:/home/ubuntu/
+      with_items: "{{ mysql_slaves }}"
+  
+
+# DB SLAVE
+- name: Configure DB Slave
+  tags:
+    - configure_slave
+  hosts: dbSlave
+  become: yes
+  vars:
+    mysql_master_ip: "{{ hostvars['dbMaster'].ansible_host  }}"
+  
+  tasks:  
+    - name: Update and install MySQL server
+      apt:
+        name: mysql-server
+        update_cache: yes
+        state: present
+
+    - name: Modify MySQL configuration for replication
+      lineinfile:
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+      with_items:
+        - { regexp: '^user.*', line: '#user = mysql' }
+        - { regexp: '^bind-address.*', line: 'bind-address = 0.0.0.0' }
+        - { regexp: '^# server-id.*', line: 'server-id = 2' }
+
+    - name: Restart MySQL service
+      service:
+        name: mysql
+        state: restarted
+
+    - name: Create user 'fattah' with permissions
+      shell: |
+        sudo mysql -e "CREATE USER 'fattah'@'%' IDENTIFIED BY 'password_fattah';"
+        sudo mysql -e "GRANT ALL ON *.* TO 'fattah'@'%';"
+        sudo mysql -e "FLUSH PRIVILEGES;"
+
+    - name: change master
+      shell: |
+        sudo mysql -e 'STOP SLAVE;'
+        sudo mysql -e 'CHANGE MASTER TO MASTER_HOST="{{ mysql_master_ip }}", MASTER_USER="replica", MASTER_PASSWORD="password_replica";'
+        
+    - name: apply masterdump
+      shell: | 
+        sudo mysql -uroot < /home/ubuntu/masterdump.sql
+        sudo mysql -e 'STOP SLAVE;'
+        sudo mysql -e 'START SLAVE;'
+
+
+# PhpMyAdmin Web Server
+- name: Configure phpMyAdmin and Nginx
+  tags:
+    - configure_web
+  hosts: phpMyAdmin
+  become: yes
+  vars:
+    mysql_master: "{{ hostvars['dbMaster']['private_ip'] }}"
+    mysql_slaves: "{{ groups['dbSlave'] | map('extract', hostvars, 'private_ip') | list }}"
+    haproxy_server: "{{ hostvars['haproxy'].ansible_host  }}"
+    domain_name: "dbclusterfattah.com"
+
+  tasks:
+    - name: debug
+      debug:
+        msg:
+          - "Master IP: {{ mysql_master }}"
+          - "Slave IPs: {{ mysql_slaves }}"
+
+    - name: Update apt packages
+      apt:
+        update_cache: yes
+
+    - name: Install required packages
+      apt:
+        name:
+          - curl
+          - gpg
+          - gnupg2
+          - software-properties-common
+          - ca-certificates
+          - apt-transport-https
+          - lsb-release
+        state: present
+
+    - name: Add PHP repository
+      apt_repository:
+        repo: ppa:ondrej/php
+        state: present
+        update_cache: yes
+
+    - name: Install PHP 8.3 and extensions
+      apt:
+        name:
+          - php8.3
+          - php8.3-fpm
+          - php8.3-cli
+          - php8.3-pdo
+          - php8.3-mysql
+          - php8.3-zip
+          - php8.3-gd
+          - php8.3-mbstring
+          - php8.3-curl
+          - php8.3-xml
+          - php8.3-bcmath
+          - php8.3-common
+        state: present
+
+    - name: Install Nginx
+      apt:
+        name: nginx
+        state: present
+
+    - name: Configure phpMyAdmin directory
+      shell: |
+        cd /var/www/
+        chown -R $USER:$USER /var/www
+        wget https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-english.tar.gz
+        mkdir phpmyadmin
+        tar -xvzf phpMyAdmin-5.2.1-english.tar.gz -C phpmyadmin
+        cd phpmyadmin
+        mv phpMyAdmin-5.2.1-english/* .
+        rm /var/www/phpMyAdmin-5.2.1-english.tar.gz
+
+    - name: Create Nginx configuration for phpMyAdmin
+      template:
+        src: ./templates/server.j2
+        dest: /etc/nginx/sites-available/phpMyAdmin.local
+      tags: phpmyadmin
+
+    - name: Enable phpMyAdmin site
+      file:
+        src: /etc/nginx/sites-available/phpMyAdmin.local
+        dest: /etc/nginx/sites-enabled/phpMyAdmin.local
+        state: link
+
+    - name: Generate Blowfish secret
+      shell: |
+        openssl rand -base64 22 | tr -d '\n'
+      register: blowfish_secret
+      tags: phpmyadmin
+
+    - name: Create SSL directory
+      command:
+        cmd: sudo mkdir -p /etc/nginx/ssl
+      args:
+        creates: /etc/nginx/ssl
+
+    - name: Generate self-signed certificate
+      command: >
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048
+        -keyout /etc/nginx/ssl/nginx-selfsigned.key
+        -out /etc/nginx/ssl/nginx-selfsigned.crt
+        -subj "/C=US/ST=State/L=City/O=Organization/OU=Department/CN=example.com"
+      args:
+        creates: /etc/nginx/ssl/nginx-selfsigned.crt
+
+    - name: Configure phpMyAdmin database connections
+      template:
+        src: ./templates/config.inc.php.j2
+        dest: /var/www/phpmyadmin/config.inc.php
+      tags: phpmyadmin
+
+    - name: Restart Nginx after configuration
+      systemd:
+        name: nginx
+        state: restarted
+      tags: phpmyadmin
+
+# PhpMyAdmin Web Server 2
+- name: Update phpMyAdmin2 login header 
+  hosts: phpMyAdmin2
+  become: yes
+  tags:
+    - configure_web2
+  tasks:
+    - name: Replace phpMyAdmin login header template
+      template:
+        src: ./templates/header.twig.j2
+        dest: /var/www/phpmyadmin/templates/login/header.twig
+    
+    - name: Restart Nginx after configuration
+      systemd:
+        name: nginx
+        state: restarted
+
+
+
+# HAPROXY
+- name: Configure HAProxy 
+  hosts: haproxy
+  become: yes
+  tags:
+    - configure_haproxy
+  vars:
+    nginx_server: "{{ groups['phpMyAdmin'] | map('extract', hostvars, 'ansible_host') | list }}"
+  tasks:
+    - name: debug
+      debug:
+        msg: "{{ nginx_server }}"
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install HAProxy
+      apt:
+        name: haproxy
+        state: present
+
+    - name: enable haproxy
+      lineinfile:
+        path: /etc/default/haproxy
+        line: "ENABLED=1"
+        create: yes
+        state: present
+
+
+    - name: Configure HAProxy using template
+      template:
+        src: ./templates/haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+
+    # - name: Restart haproxy
+    #   systemd:
+    #     name: haproxy
+    #     state: restarted
+
+## COBAIN BOSS
+- name: Configure HAProxy with SSL
+  hosts: haproxy
+  tags:
+    - configure_haproxy_ssl
+  become: true
+  vars:
+    nginx_server: "{{ groups['phpMyAdmin'] | map('extract', hostvars, 'ansible_host') | list }}"
+  tasks:
+    - name: Create SSL directory
+      command:
+        cmd: sudo mkdir -p /etc/haproxy/ssl
+      args:
+        creates: /etc/haproxy/ssl
+
+    - name: Ensure SSL directory permissions
+      file:
+        path: /etc/haproxy/ssl
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Generate self-signed certificate
+      command: >
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048
+        -keyout /etc/haproxy/ssl/haproxy-selfsigned.key
+        -out /etc/haproxy/ssl/haproxy-selfsigned.crt
+        -subj "/C=US/ST=State/L=City/O=Organization/OU=Department/CN=example.com"
+      args:
+        creates: /etc/haproxy/ssl/haproxy-selfsigned.crt
+
+    - name: Combine certificate and key into haproxy.crt
+      shell: sudo cat /etc/haproxy/ssl/haproxy-selfsigned.crt /etc/haproxy/ssl/haproxy-selfsigned.key | sudo tee /etc/haproxy/ssl/haproxy.crt
+      args:
+        creates: /etc/haproxy/ssl/haproxy.crt
+
+    - name: Deploy HAProxy configuration file
+      template:
+        src: ./templates/haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Restart HAProxy
+      service:
+        name: haproxy
+        state: restarted
+
+# DNS Server
+- name: Setup DNS Server with BIND9
+  tags:
+    - configure_dns
+  hosts: DNS
+  become: yes
+  vars:
+    dns_forwarders:
+      - "8.8.8.8"   # Google DNS
+      - "8.8.4.4"
+    domain_name: "dbclusterfattah.com"
+    web_server: "{{ hostvars['haproxy'].ansible_host }}"
+
+  tasks:
+    - debug:
+        msg: 
+        - "server ip: {{ web_server }}"
+        - "dns server: {{ansible_host}}"
+
+    - name: Install BIND9 and related packages
+      apt:
+        name:
+          - bind9
+          - bind9utils
+          - bind9-doc
+          - dnsutils
+        state: present
+        update_cache: yes
+
+    - name: Create zones directory
+      file:
+        path: /etc/bind/zones
+        state: directory
+        owner: root
+        group: bind
+        mode: '0755'
+
+    - name: Configure named.conf.options
+      copy:
+        dest: /etc/bind/named.conf.options
+        content: |
+          options {
+              directory "/var/cache/bind";
+              forwarders {
+                  {{web_server}};
+                  {% for forwarder in dns_forwarders %}
+                  {{ forwarder }};
+                  {% endfor %}
+              };
+              listen-on-v6 { any; };
+              listen-on { any; };           
+              allow-query { any; };          
+              recursion yes;            
+          };
+
+    - name: Configure DNS Zone file
+      template:
+        src: ./templates/db.forwarder.j2
+        dest: "/etc/bind/zones/db.{{domain_name}}"
+      notify:
+        - Restart bind9
+
+    - name: Configure named.conf.local
+      template:
+        src: ./templates/named.conf.local.j2
+        dest: /etc/bind/named.conf.local
+      notify:
+        - Restart bind9
+
+    - name: Ensure BIND9 is started and enabled
+      service:
+        name: bind9
+        state: started
+        enabled: yes
+
+    - debug:
+        msg: "akses domain: http://{{ domain_name }}"
+
+  handlers:
+    - name: Restart bind9
+      service:
+        name: bind9
+        state: restarted
+

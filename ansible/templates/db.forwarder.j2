@@ -1,0 +1,17 @@
+$TTL    604800
+@       IN      SOA     ns1.{{domain_name}}. admin.{{domain_name}}. (
+                            3         ; Serial
+                       604800         ; Refresh
+                        86400         ; Retry
+                      2419200         ; Expire
+                       604800 )       ; Negative Cache TTL
+
+; Nameservers
+@       IN      NS      ns1.{{domain_name}}.
+
+; A Records
+ns1     IN      A       {{ansible_host}}
+@       IN      A       {{web_server}}
+
+; CNAME atau subdomain (opsional)
+www     IN      A       {{web_server}}
